@@ -16,6 +16,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/scripts/db-url.js ./scripts/db-url.js
 EXPOSE 3000
 # Applies pending database migrations, then starts the API.
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main.js"]
+CMD ["sh", "-c", "export DATABASE_URL=\"$(node scripts/db-url.js)\" && npx prisma migrate deploy && node dist/src/main.js"]

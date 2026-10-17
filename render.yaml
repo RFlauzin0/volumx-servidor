@@ -1,16 +1,18 @@
 # Render Blueprint — servidor VolumX no plano gratuito (sem cartão).
 # Dados e fotos ficam no banco PostgreSQL do Supabase (gratuito).
-# Só existe UM campo para preencher: DATABASE_URL.
+# Só existe UM campo para preencher: DB_PASSWORD (a senha do banco).
 services:
   - type: web
     name: volumx-api
     runtime: docker
     plan: free
-    region: oregon
+    region: virginia
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
-      - key: DATABASE_URL          # Supabase → Connect → "Session pooler", com a senha
+      - key: DATABASE_URL
+        value: postgresql://postgres.wkafoluoosfkcszigmxk@aws-0-us-east-1.pooler.supabase.com:5432/postgres
+      - key: DB_PASSWORD           # cole aqui a senha do banco do Supabase
         sync: false
       - key: JWT_SECRET
         generateValue: true
