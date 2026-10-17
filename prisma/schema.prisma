@@ -1,0 +1,403 @@
+generator client {
+    provider = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+model User {
+  id                  String              @id @default(uuid())
+  email               String              @unique
+  password            String?
+  name                String
+  avatarUrl           String?
+  googleId            String?             @unique
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  ownedTeams          Team[]              @relation("TeamOwner")
+  teamMemberships     TeamMember[]
+  projects            Project[]
+  measuredTrees       Tree[]              @relation("MeasuredBy")
+  volumeCalculations  VolumeCalculation[]
+  volumeEquations     VolumeEquation[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  pushTokens          PushToken[]
+  files               File[]
+  syncQueues          SyncQueue[]
+  clients             Client[]
+  licenses            License[]
+
+  @@map("users")
+}
+
+model Team {
+  id        String       @id @default(uuid())
+  name      String
+  ownerId   String
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  owner     User         @relation("TeamOwner", fields: [ownerId], references: [id])
+  members   TeamMember[]
+  projects  Project[]
+
+  @@index([ownerId])
+  @@map("teams")
+}
+
+model TeamMember {
+  id       String   @id @default(uuid())
+  teamId   String
+  userId   String
+  role     String   @default("member")
+  joinedAt DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@map("team_members")
+}
+
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  teamId      String?
+  userId      String
+  location    String?
+
+  // --- Consultancy fields ---
+  clientId     String?
+  /// 'inventario' | 'pmfs' | 'poa' | 'asv' | 'inventario100' | 'carbono' | 'outro'
+  projectType  String?
+  /// Total area of the property / stand, ha. Used as N for sampling.
+  totalAreaHa  Float?
+  municipality String?
+  state        String?
+  /// Technical lead (name) and their ART number.
+  technicalLead String?
+  artNumber    String?
+  /// 'planejamento' | 'campo' | 'analise' | 'relatorio' | 'protocolado' | 'concluido'
+  status       String?  @default("planejamento")
+  dueDate      DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  team    Team?    @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  user    User     @relation(fields: [userId], references: [id])
+  client  Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  licenses License[]
+  volumeEquations VolumeEquation[]
+  parcels Parcel[]
+  trees   Tree[]
+
+  @@index([userId])
+  @@index([teamId])
+  @@map("projects")
+}
+
+model Parcel {
+  id          String   @id @default(uuid())
+  projectId   String
+  name        String
+  area        Float?
+  description String?
+  /// Stratum label for stratified sampling (e.g. "Floresta densa").
+  stratum     String?
+  latitude    Float?
+  longitude   Float?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  trees   Tree[]
+
+  @@index([projectId])
+  @@map("parcels")
+}
+
+model Tree {
+  id               String   @id @default(uuid())
+  parcelId         String
+  projectId        String
+  speciesName      String
+  dbh              Float
+  height           Float
+  latitude         Float?
+  longitude        Float?
+  measuredAt       DateTime @default(now())
+  measuredByUserId String
+  notes            String?
+  barkPercentage   Float?
+
+  // --- Forestry fields ---
+  // Commercial height (up to the first big branch or the minimum usable
+  // diameter). It was being measured by the app and then thrown away, yet it
+  // is the height that matters for sawn timber.
+  commercialHeight Float?
+  // Point of measurement: height above ground where the diameter was taken.
+  // Required by management-plan rules whenever it differs from 1.30 m, which
+  // buttressed Amazonian species routinely do.
+  pom              Float?
+  // Circumference at the POM, in cm. Stored alongside DBH because foresters
+  // record CAP in the field and the two must stay consistent.
+  cap              Float?
+  measurementMethod String?
+  measurementConfidence Int?
+  /// Field tag (plaqueta) number — the id used in the 100% inventory.
+  tagNumber        String?
+  /// Stem quality class: 1 (straight, sound), 2 (some defects), 3 (unusable for sawn timber).
+  stemQuality      Int?
+  /// 'sadia' | 'oca' | 'podre' | 'danificada'
+  sanity           String?
+  /// 'remanescente' | 'explorar' | 'porta-semente' | 'protegida' | 'morta'
+  treeStatus       String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  parcel             Parcel              @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+  project            Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  measuredBy         User                @relation("MeasuredBy", fields: [measuredByUserId], references: [id])
+  photos             TreePhoto[]
+  logSections        LogSection[]
+  volumeCalculations VolumeCalculation[]
+
+  @@index([parcelId])
+  @@index([projectId])
+  @@index([measuredByUserId])
+  @@index([speciesName])
+  @@map("trees")
+}
+
+model TreePhoto {
+  id                String   @id @default(uuid())
+  treeId            String
+  cloudStoragePath  String   @map("cloud_storage_path")
+  isPublic          Boolean  @default(false)
+  caption           String?
+  contentType       String?
+  createdAt         DateTime @default(now())
+
+  tree Tree @relation(fields: [treeId], references: [id], onDelete: Cascade)
+
+  @@index([treeId])
+  @@map("tree_photos")
+}
+
+model LogSection {
+  id               String   @id @default(uuid())
+  treeId           String
+  sectionNumber    Int
+  length           Float
+  diameterSmallEnd Float
+  diameterLargeEnd Float
+  diameterMiddle   Float?
+  createdAt        DateTime @default(now())
+
+  tree Tree @relation(fields: [treeId], references: [id], onDelete: Cascade)
+
+  @@unique([treeId, sectionNumber])
+  @@index([treeId])
+  @@map("log_sections")
+}
+
+model VolumeCalculation {
+  id                 String   @id @default(uuid())
+  treeId             String
+  method             String
+  totalVolume        Float
+  sectionVolumes     Json
+  barkPercentage     Float?
+  calculatedAt       DateTime @default(now())
+  calculatedByUserId String
+
+  tree         Tree @relation(fields: [treeId], references: [id], onDelete: Cascade)
+  calculatedBy User @relation(fields: [calculatedByUserId], references: [id])
+
+  @@index([treeId])
+  @@index([calculatedByUserId])
+  @@map("volume_calculations")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  entityType String
+  entityId   String
+  action     String
+  changes    Json?
+  userId     String
+  timestamp  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([timestamp])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  body      String
+  type      String
+  read      Boolean  @default(false)
+  data      Json?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, read])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+model PushToken {
+  id         String   @id @default(uuid())
+  userId     String?
+  token      String   @unique
+  deviceType String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("push_tokens")
+}
+
+model File {
+  id               String   @id @default(uuid())
+  userId           String
+  fileName         String
+  cloudStoragePath String   @map("cloud_storage_path")
+  isPublic         Boolean  @default(false)
+  contentType      String
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([cloudStoragePath])
+  @@map("files")
+}
+
+model SyncQueue {
+  id         String   @id @default(uuid())
+  userId     String
+  entityType String
+  entityId   String
+  action     String
+  payload    Json
+  synced     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([userId, synced])
+  @@index([createdAt])
+  @@map("sync_queue")
+}
+
+/// Volume equation used to estimate standing-tree volume from DBH and height.
+/// Without this the app could only produce volume through full stem analysis
+/// (cubagem rigorosa), which requires sectioning the tree — so every standing
+/// tree in an inventory had a volume of zero.
+model VolumeEquation {
+  id          String   @id @default(uuid())
+  name        String
+  /// 'schumacher' | 'spurr' | 'husch' | 'formFactor'
+  type        String
+  /// { b0, b1, b2 } or { f } depending on type
+  coefficients Json
+  /// Null means it applies to any species.
+  speciesName String?
+  /// Null means it is available to every project of the user.
+  projectId   String?
+  userId      String
+  rSquared    Float?
+  sampleSize  Int?
+  /// Fitted from the user's own cubed trees, rather than taken from literature.
+  isFitted    Boolean  @default(false)
+  /// Which height the equation expects: 'total' or 'commercial'.
+  heightBasis String   @default("total")
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([projectId])
+  @@index([speciesName])
+  @@map("volume_equations")
+}
+
+/// A consultancy client: landowner, company or community.
+model Client {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  /// CPF or CNPJ
+  document  String?
+  email     String?
+  phone     String?
+  city      String?
+  state     String?
+  /// Property name and CAR registration
+  propertyName String?
+  carNumber String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projects Project[]
+  licenses License[]
+
+  @@index([userId])
+  @@map("clients")
+}
+
+/// A licence, authorisation, protocol or any dated obligation (LO, AUTEX,
+/// ASV, DOF, condicionante...). The point is the expiry date: the app warns
+/// before it lapses, which is the single most expensive thing a consultancy
+/// can forget.
+model License {
+  id          String    @id @default(uuid())
+  userId      String
+  clientId    String?
+  projectId   String?
+  /// 'LO' | 'LP' | 'LI' | 'AUTEX' | 'ASV' | 'DOF' | 'CAR' | 'condicionante' | 'protocolo' | 'outro'
+  type        String
+  number      String?
+  issuer      String?
+  title       String
+  issueDate   DateTime?
+  expiryDate  DateTime?
+  /// Days before expiry to start warning.
+  alertDays   Int       @default(60)
+  /// 'vigente' | 'em_renovacao' | 'vencida' | 'arquivada'
+  status      String    @default("vigente")
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client  Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([expiryDate])
+  @@map("licenses")
+}

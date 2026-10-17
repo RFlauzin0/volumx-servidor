@@ -1,0 +1,33 @@
+# Render Blueprint — servidor VolumX no plano gratuito (sem cartão).
+# Banco de dados e fotos ficam no Supabase (também gratuito).
+# Na Render: New + → Blueprint → escolha este repositório e preencha os
+# campos marcados como "sync: false" com os dados do Supabase.
+services:
+  - type: web
+    name: volumx-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL          # Supabase → Connect → "Session pooler"
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: STORAGE_DRIVER
+        value: proxy
+      - key: S3_BUCKET
+        value: volumx
+      - key: S3_ENDPOINT           # Supabase → Storage → S3 Connection → Endpoint
+        sync: false
+      - key: S3_REGION             # Supabase → Storage → S3 Connection → Region
+        sync: false
+      - key: S3_ACCESS_KEY         # Supabase → Storage → S3 Connection → Access key ID
+        sync: false
+      - key: S3_SECRET_KEY         # Supabase → Storage → S3 Connection → Secret access key
+        sync: false
+      - key: GOOGLE_CLIENT_ID      # opcional: ID do cliente OAuth "Aplicativo da Web"
+        sync: false
+      - key: ANTHROPIC_API_KEY     # opcional: análise de pilha de toras por foto
+        sync: false
