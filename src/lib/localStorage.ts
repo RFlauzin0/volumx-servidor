@@ -23,7 +23,21 @@ export const requestOrigin = new AsyncLocalStorage<string>();
  */
 export function isLocalStorage(): boolean {
   const d = (process.env.STORAGE_DRIVER ?? '').toLowerCase();
-  return d === 'local' || d === 'proxy';
+  return d === 'local' || d === 'proxy' || d === 'db';
+}
+
+/** Files kept inside PostgreSQL (table stored_files). */
+export function isDb(): boolean {
+  return (process.env.STORAGE_DRIVER ?? '').toLowerCase() === 'db';
+}
+
+let _prisma: any = null;
+function db() {
+  if (!_prisma) {
+    const { PrismaClient } = require('@prisma/client');
+    _prisma = new PrismaClient();
+  }
+  return _prisma;
 }
 
 export function isProxy(): boolean {
@@ -48,6 +62,12 @@ async function streamToBuffer(data: NodeJS.ReadableStream): Promise<Buffer> {
 
 /** Reads a stored file: { body stream, contentType } or null when missing. */
 export async function readFile(key: string): Promise<{ stream: NodeJS.ReadableStream; contentType?: string } | null> {
+  if (isDb()) {
+    const row = await db().storedFile.findUnique({ where: { key } });
+    if (!row) return null;
+    const { Readable } = require('stream');
+    return { stream: Readable.from(Buffer.from(row.data)), contentType: row.contentType ?? undefined };
+  }
   if (isProxy()) {
     const { GetObjectCommand } = require('@aws-sdk/client-s3');
     try {
@@ -100,6 +120,15 @@ export function signedUrl(op: 'put' | 'get', key: string, ttlSeconds = 3600): st
 }
 
 export async function writeFile(key: string, data: Buffer | NodeJS.ReadableStream, contentType?: string): Promise<number> {
+  if (isDb()) {
+    const body = Buffer.isBuffer(data) ? data : await streamToBuffer(data);
+    await db().storedFile.upsert({
+      where: { key },
+      create: { key, data: body, size: body.length, contentType: contentType ?? null },
+      update: { data: body, size: body.length, contentType: contentType ?? null },
+    });
+    return body.length;
+  }
   if (isProxy()) {
     const { PutObjectCommand } = require('@aws-sdk/client-s3');
     const body = Buffer.isBuffer(data) ? data : await streamToBuffer(data);
@@ -126,6 +155,10 @@ export async function writeFile(key: string, data: Buffer | NodeJS.ReadableStrea
 }
 
 export async function removeFile(key: string): Promise<void> {
+  if (isDb()) {
+    await db().storedFile.deleteMany({ where: { key } });
+    return;
+  }
   if (isProxy()) {
     const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
     await s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
