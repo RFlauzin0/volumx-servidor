@@ -31,6 +31,8 @@ export interface GeminiTurn {
 // follow Google's renames, so they keep working after a model is retired.
 const CANDIDATES = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-3-flash', 'gemini-2.0-flash', 'gemini-pro-latest'];
 let lastListError: string | null = null;
+let lastCallError: string | null = null;
+let lastTried: string[] = [];
 
 async function listModels(key: string): Promise<string[]> {
   try {
@@ -69,7 +71,7 @@ async function modelCandidates(key: string): Promise<string[]> {
 
 /** Status for /api/ai/status (no secrets). */
 export function geminiDiagnostics() {
-  return { model: resolvedModel, listError: lastListError };
+  return { model: resolvedModel, listError: lastListError, lastError: lastCallError, tried: lastTried };
 }
 
 /** Calls Gemini and returns the text of the answer. */
@@ -84,7 +86,9 @@ export async function geminiGenerate(opts: {
   if (!key) throw new BadRequestException('A IA ainda não foi ativada no servidor (falta a chave gratuita do Google AI Studio).');
 
   let res: Response | null = null;
-  for (const model of await modelCandidates(key)) {
+  lastTried = [];
+  for (const model of (await modelCandidates(key)).slice(0, 6)) {
+    lastTried.push(model);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 120000);
     try {
@@ -108,9 +112,10 @@ export async function geminiGenerate(opts: {
     } finally {
       clearTimeout(timer);
     }
-    // Model name retired or not available to this key: try the next one.
-    if (res.status === 404) {
-      logger.warn(`Gemini model ${model} not found, trying next`);
+    // Model retired (404) or overloaded/unavailable (5xx): try the next one.
+    if (res.status === 404 || res.status >= 500) {
+      lastCallError = `${model} ${res.status}: ${(await res.clone().text().catch(() => '')).slice(0, 160)}`;
+      logger.warn(`Gemini ${lastCallError}`);
       if (resolvedModel === model) resolvedModel = null;
       continue;
     }
