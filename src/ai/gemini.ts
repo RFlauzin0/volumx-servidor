@@ -33,6 +33,7 @@ const CANDIDATES = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-3-flash',
 let lastListError: string | null = null;
 let lastCallError: string | null = null;
 let lastTried: string[] = [];
+let lastListed: string[] = [];
 
 async function listModels(key: string): Promise<string[]> {
   try {
@@ -44,6 +45,7 @@ async function listModels(key: string): Promise<string[]> {
     }
     const data: any = await res.json();
     lastListError = null;
+    lastListed = (data?.models ?? []).map((m: any) => String(m.name).replace(/^models\//, '')).slice(0, 40);
     return (data?.models ?? [])
       .filter((m: any) => (m?.supportedGenerationMethods ?? []).includes('generateContent'))
       .map((m: any) => String(m.name).replace(/^models\//, ''));
@@ -71,7 +73,7 @@ async function modelCandidates(key: string): Promise<string[]> {
 
 /** Status for /api/ai/status (no secrets). */
 export function geminiDiagnostics() {
-  return { model: resolvedModel, listError: lastListError, lastError: lastCallError, tried: lastTried };
+  return { model: resolvedModel, listError: lastListError, lastError: lastCallError, tried: lastTried, available: lastListed };
 }
 
 /** Calls Gemini and returns the text of the answer. */
@@ -90,7 +92,8 @@ export async function geminiGenerate(opts: {
   for (const model of (await modelCandidates(key)).slice(0, 6)) {
     lastTried.push(model);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 120000);
+    // Short per-model timeout so a stuck model does not eat the whole request.
+    const timer = setTimeout(() => controller.abort(), Math.min(opts.timeoutMs ?? 120000, 45000));
     try {
       res = await fetch(`${BASE}/models/${model}:generateContent`, {
         method: 'POST',
@@ -107,8 +110,10 @@ export async function geminiGenerate(opts: {
         signal: controller.signal,
       });
     } catch (e: any) {
-      if (e?.name === 'AbortError') throw new BadRequestException('A IA demorou demais para responder. Tente de novo.');
-      throw new BadRequestException('Não foi possível falar com a IA. Tente de novo em instantes.');
+      lastCallError = `${model}: ${e?.name === 'AbortError' ? 'timeout' : e?.message}`;
+      logger.warn(`Gemini ${lastCallError}`);
+      res = null;
+      continue;
     } finally {
       clearTimeout(timer);
     }
@@ -122,7 +127,7 @@ export async function geminiGenerate(opts: {
     if (res.ok) resolvedModel = model;
     break;
   }
-  if (!res) throw new BadRequestException('Nenhum modelo de IA disponível para esta chave.');
+  if (!res) throw new BadRequestException('A IA está sobrecarregada ou demorou demais. Tente de novo em instantes.');
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
