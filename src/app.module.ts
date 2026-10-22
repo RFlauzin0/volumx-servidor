@@ -19,6 +19,7 @@ import { AuditModule } from './audit/audit.module';
 import { SpeciesModule } from './species/species.module';
 import { LogPileModule } from './logpile/logpile.module';
 import { ConsultancyModule } from './consultancy/consultancy.module';
+import { AiModule } from './ai/ai.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { ConsultancyModule } from './consultancy/consultancy.module';
     SpeciesModule,
     LogPileModule,
     ConsultancyModule,
+    AiModule,
   ],
 })
 export class AppModule {}

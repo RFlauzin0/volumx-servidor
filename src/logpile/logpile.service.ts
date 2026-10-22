@@ -1,6 +1,7 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
+import { geminiEnabled, geminiGenerate, imagePart } from '../ai/gemini';
 
 export interface LogDetection {
   id: number;
@@ -119,8 +120,15 @@ export class LogPileService {
     userText: string,
     timeoutMs = 120000,
   ): Promise<string> {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new BadRequestException('Análise por IA não configurada no servidor (ANTHROPIC_API_KEY).');
+    // Free path first: Google Gemini (AI Studio free tier). Claude only when a
+    // paid Anthropic key is configured and Gemini is not.
+    if (geminiEnabled() || !process.env.ANTHROPIC_API_KEY) {
+      return geminiGenerate({
+        system: systemPrompt,
+        turns: [{ role: 'user', parts: [imagePart(dataUri), { text: userText }] }],
+        json: true,
+        timeoutMs,
+      });
     }
     const m = dataUri.match(/^data:(image\/(?:jpeg|png|gif|webp));base64,(.+)$/);
     if (!m) throw new BadRequestException('Formato de imagem não suportado (use JPEG ou PNG).');
