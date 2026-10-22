@@ -55,19 +55,23 @@ async function listModels(key: string): Promise<string[]> {
   }
 }
 
+// Free-tier friendly text+image models, most reliable first.
+const PREFERRED = [
+  'gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest',
+  'gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite',
+];
+const NOT_CHAT = /(tts|image|lyria|nano|banana|omni|robotics|computer-use|transcribe|embedding|live|audio|argon|customtools|gemma)/;
+
 /** Candidate model names, best first. */
 async function modelCandidates(key: string): Promise<string[]> {
-  const wanted = process.env.GEMINI_MODEL;
   const names = await listModels(key);
+  const has = (n: string) => names.length === 0 || names.includes(n);
   const out: string[] = [];
+  if (process.env.GEMINI_MODEL) out.push(process.env.GEMINI_MODEL);
   if (resolvedModel) out.push(resolvedModel);
-  if (wanted) out.push(wanted);
-  if (names.length) {
-    // Stable "flash" models: fast, accept images, free tier. Newest first.
-    const flash = names.filter((n) => /flash/.test(n) && !/(lite|image|tts|live|audio|embedding|exp|thinking)/.test(n)).sort().reverse();
-    out.push(...flash.filter((n) => /latest/.test(n)), ...flash.filter((n) => !/latest|preview/.test(n)), ...flash);
-  }
-  out.push(...CANDIDATES);
+  out.push(...PREFERRED.filter(has));
+  out.push(...names.filter((n) => /flash/.test(n) && !NOT_CHAT.test(n)).sort().reverse());
+  if (names.length === 0) out.push(...CANDIDATES);
   return [...new Set(out)];
 }
 
@@ -118,7 +122,8 @@ export async function geminiGenerate(opts: {
       clearTimeout(timer);
     }
     // Model retired (404) or overloaded/unavailable (5xx): try the next one.
-    if (res.status === 404 || res.status >= 500) {
+    // 429 on one model often means only THAT model has no free quota left.
+    if (res.status === 404 || res.status === 429 || res.status >= 500) {
       lastCallError = `${model} ${res.status}: ${(await res.clone().text().catch(() => '')).slice(0, 160)}`;
       logger.warn(`Gemini ${lastCallError}`);
       if (resolvedModel === model) resolvedModel = null;
