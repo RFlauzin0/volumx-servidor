@@ -27,29 +27,49 @@ export interface GeminiTurn {
   parts: GeminiPart[];
 }
 
-async function pickModel(key: string): Promise<string> {
-  if (resolvedModel) return resolvedModel;
-  const wanted = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// Names tried in order when the model list cannot be read. "-latest" aliases
+// follow Google's renames, so they keep working after a model is retired.
+const CANDIDATES = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-3-flash', 'gemini-2.0-flash', 'gemini-pro-latest'];
+let lastListError: string | null = null;
+
+async function listModels(key: string): Promise<string[]> {
   try {
     const res = await fetch(`${BASE}/models?pageSize=200`, { headers: { 'x-goog-api-key': key } });
-    if (res.ok) {
-      const data: any = await res.json();
-      const names: string[] = (data?.models ?? [])
-        .filter((m: any) => (m?.supportedGenerationMethods ?? []).includes('generateContent'))
-        .map((m: any) => String(m.name).replace(/^models\//, ''));
-      if (names.includes(wanted)) resolvedModel = wanted;
-      else {
-        // Newest stable "flash" model: cheap, fast, accepts images, free tier.
-        const flash = names.filter((n) => /flash/.test(n) && !/(lite|image|tts|live|preview|exp|thinking)/.test(n)).sort().reverse();
-        resolvedModel = flash[0] ?? names.find((n) => /flash/.test(n)) ?? wanted;
-        logger.warn(`Model ${wanted} not available; using ${resolvedModel}`);
-      }
-      return resolvedModel;
+    if (!res.ok) {
+      lastListError = `list ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`;
+      logger.warn(lastListError);
+      return [];
     }
+    const data: any = await res.json();
+    lastListError = null;
+    return (data?.models ?? [])
+      .filter((m: any) => (m?.supportedGenerationMethods ?? []).includes('generateContent'))
+      .map((m: any) => String(m.name).replace(/^models\//, ''));
   } catch (e: any) {
-    logger.warn(`Could not list Gemini models: ${e?.message}`);
+    lastListError = `list failed: ${e?.message}`;
+    return [];
   }
-  return wanted;
+}
+
+/** Candidate model names, best first. */
+async function modelCandidates(key: string): Promise<string[]> {
+  const wanted = process.env.GEMINI_MODEL;
+  const names = await listModels(key);
+  const out: string[] = [];
+  if (resolvedModel) out.push(resolvedModel);
+  if (wanted) out.push(wanted);
+  if (names.length) {
+    // Stable "flash" models: fast, accept images, free tier. Newest first.
+    const flash = names.filter((n) => /flash/.test(n) && !/(lite|image|tts|live|audio|embedding|exp|thinking)/.test(n)).sort().reverse();
+    out.push(...flash.filter((n) => /latest/.test(n)), ...flash.filter((n) => !/latest|preview/.test(n)), ...flash);
+  }
+  out.push(...CANDIDATES);
+  return [...new Set(out)];
+}
+
+/** Status for /api/ai/status (no secrets). */
+export function geminiDiagnostics() {
+  return { model: resolvedModel, listError: lastListError };
 }
 
 /** Calls Gemini and returns the text of the answer. */
@@ -62,40 +82,50 @@ export async function geminiGenerate(opts: {
 }): Promise<string> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new BadRequestException('A IA ainda não foi ativada no servidor (falta a chave gratuita do Google AI Studio).');
-  const model = await pickModel(key);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 120000);
-  let res: Response;
-  try {
-    res = await fetch(`${BASE}/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: opts.system }] },
-        contents: opts.turns,
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: opts.maxOutputTokens ?? 8192,
-          ...(opts.json ? { responseMimeType: 'application/json' } : {}),
-        },
-      }),
-      signal: controller.signal,
-    });
-  } catch (e: any) {
-    if (e?.name === 'AbortError') throw new BadRequestException('A IA demorou demais para responder. Tente de novo.');
-    throw new BadRequestException('Não foi possível falar com a IA. Tente de novo em instantes.');
-  } finally {
-    clearTimeout(timer);
+  let res: Response | null = null;
+  for (const model of await modelCandidates(key)) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 120000);
+    try {
+      res = await fetch(`${BASE}/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: opts.system }] },
+          contents: opts.turns,
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: opts.maxOutputTokens ?? 8192,
+            ...(opts.json ? { responseMimeType: 'application/json' } : {}),
+          },
+        }),
+        signal: controller.signal,
+      });
+    } catch (e: any) {
+      if (e?.name === 'AbortError') throw new BadRequestException('A IA demorou demais para responder. Tente de novo.');
+      throw new BadRequestException('Não foi possível falar com a IA. Tente de novo em instantes.');
+    } finally {
+      clearTimeout(timer);
+    }
+    // Model name retired or not available to this key: try the next one.
+    if (res.status === 404) {
+      logger.warn(`Gemini model ${model} not found, trying next`);
+      if (resolvedModel === model) resolvedModel = null;
+      continue;
+    }
+    if (res.ok) resolvedModel = model;
+    break;
   }
+  if (!res) throw new BadRequestException('Nenhum modelo de IA disponível para esta chave.');
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     logger.error(`Gemini ${res.status}: ${body.slice(0, 500)}`);
+    if (res.status === 404) throw new BadRequestException('Nenhum modelo de IA disponível para esta chave. Gere uma nova no Google AI Studio.');
     if (res.status === 429) throw new BadRequestException('Limite gratuito da IA atingido por agora. Espere 1 minuto e tente de novo.');
     if (res.status === 400 && /API key/i.test(body)) throw new BadRequestException('A chave da IA no servidor é inválida.');
-    if (res.status === 403) throw new BadRequestException('A chave da IA no servidor não tem permissão. Gere outra no Google AI Studio.');
-    if (res.status === 404) resolvedModel = null; // model retired: re-pick next time
+    if (res.status === 401 || res.status === 403) throw new BadRequestException('A chave da IA no servidor não tem permissão. Gere outra no Google AI Studio.');
     throw new BadRequestException(`A IA respondeu com erro (${res.status}). Tente de novo.`);
   }
 

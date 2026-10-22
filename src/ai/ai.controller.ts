@@ -3,7 +3,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AiService } from './ai.service';
-import { geminiEnabled } from './gemini';
+import { geminiEnabled, geminiDiagnostics } from './gemini';
 
 @ApiTags('AI')
 @ApiBearerAuth()
@@ -15,7 +15,7 @@ export class AiController {
   @Get('status')
   @ApiOperation({ summary: 'Whether the AI features are enabled on this server' })
   status() {
-    return { enabled: geminiEnabled() || !!process.env.ANTHROPIC_API_KEY };
+    return { enabled: geminiEnabled() || !!process.env.ANTHROPIC_API_KEY, ...geminiDiagnostics() };
   }
 
   @Post('chat')
